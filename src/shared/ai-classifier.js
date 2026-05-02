@@ -27,7 +27,6 @@ export async function fetchAiCategoryMap(tabs, options = {}) {
         tabs: eligibleTabs.map((tab) => ({
           id: tab.id,
           title: tab.title || "",
-          url: tab.url || "",
           hostname: getHostname(tab.url)
         }))
       }),

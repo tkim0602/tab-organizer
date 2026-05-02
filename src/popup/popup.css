@@ -148,6 +148,133 @@ h1 {
   content: "_";
 }
 
+.preview-panel {
+  background: #dce4df;
+  border: 1px solid #93a09b;
+  border-radius: 5px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58), 0 2px 0 rgba(35, 44, 41, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 242px;
+  overflow: hidden;
+  padding: 9px;
+}
+
+.preview-panel[hidden] {
+  display: none;
+}
+
+.preview-head {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preview-title,
+.preview-meta,
+.ungrouped-title {
+  color: #27312e;
+  font-family: var(--condensed-font);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.preview-meta {
+  color: #6a7772;
+  text-align: right;
+}
+
+.preview-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 170px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.preview-group {
+  border-top: 1px solid rgba(37, 48, 44, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 7px;
+}
+
+.group-name-input {
+  appearance: none;
+  background: #eef3ef;
+  border: 1px solid #aab6b2;
+  border-radius: 3px;
+  box-sizing: border-box;
+  color: #17201d;
+  font-family: var(--condensed-font);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 6px 4px;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.preview-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preview-tab-row {
+  align-items: center;
+  color: #27312e;
+  display: flex;
+  gap: 6px;
+  min-height: 18px;
+}
+
+.preview-tab-row input {
+  accent-color: #f05a24;
+  flex: 0 0 auto;
+  height: 12px;
+  width: 12px;
+}
+
+.preview-tab-text {
+  font-family: "Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-actions {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.mini-pad {
+  background: #c5cfca;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58), 0 2px 0 rgba(35, 44, 41, 0.18);
+  color: #1f2925;
+  font-family: var(--condensed-font);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  min-height: 30px;
+  padding: 6px;
+}
+
+.mini-pad-orange {
+  background: #f05a24;
+  color: #ffffff;
+}
+
 .actions {
   display: grid;
   gap: 8px;

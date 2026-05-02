@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCrossWindowPlan, buildWindowPlan } from "../src/shared/organizer.js";
+import { buildApplyPlanFromPreview, buildCrossWindowPlan, buildWindowPlan } from "../src/shared/organizer.js";
 
 function tab(overrides) {
   return {
@@ -102,6 +102,48 @@ test("buildWindowPlan uses dynamic AI category order when provided", () => {
   assert.deepEqual(plan.orderedTabIds, [3, 4, 1, 2]);
 });
 
+test("buildWindowPlan caps generated groups at three and leaves overflow tabs ungrouped", () => {
+  const plan = buildWindowPlan(
+    [
+      tab({ id: 1, index: 0, url: "https://a.example/1" }),
+      tab({ id: 2, index: 1, url: "https://a.example/2" }),
+      tab({ id: 3, index: 2, url: "https://b.example/1" }),
+      tab({ id: 4, index: 3, url: "https://b.example/2" }),
+      tab({ id: 5, index: 4, url: "https://c.example/1" }),
+      tab({ id: 6, index: 5, url: "https://c.example/2" }),
+      tab({ id: 7, index: 6, url: "https://d.example/1" }),
+      tab({ id: 8, index: 7, url: "https://d.example/2" })
+    ],
+    {
+      categoryOrder: ["Alpha", "Beta", "Gamma", "Delta"],
+      categoryOverrides: new Map([
+        [1, "Alpha"],
+        [2, "Alpha"],
+        [3, "Beta"],
+        [4, "Beta"],
+        [5, "Gamma"],
+        [6, "Gamma"],
+        [7, "Delta"],
+        [8, "Delta"]
+      ])
+    }
+  );
+
+  assert.deepEqual(plan.groups.map((group) => group.category), ["Alpha", "Beta", "Gamma"]);
+  assert.deepEqual(plan.singles, [
+    {
+      tabId: 7,
+      category: "Delta",
+      originalIndex: 6
+    },
+    {
+      tabId: 8,
+      category: "Delta",
+      originalIndex: 7
+    }
+  ]);
+});
+
 test("buildWindowPlan ignores unusable AI category overrides", () => {
   const plan = buildWindowPlan(
     [
@@ -166,4 +208,125 @@ test("buildCrossWindowPlan consolidates eligible tabs across windows into fixed 
   assert.deepEqual(plan.pinnedTabIds, [1, 3]);
   assert.equal(plan.skippedPinnedCount, 2);
   assert.equal(plan.organizedTabCount, 4);
+});
+
+test("buildApplyPlanFromPreview omits excluded tabs and applies renamed groups", () => {
+  const applyPlan = buildApplyPlanFromPreview({
+    startIndex: 1,
+    groups: [
+      {
+        id: "group-0",
+        category: "Research",
+        tabIds: [1, 2, 3]
+      }
+    ],
+    singles: [
+      {
+        tabId: 4,
+        category: "Shopping",
+        originalIndex: 4
+      }
+    ],
+    tabDetails: {
+      1: { index: 1 },
+      2: { index: 2 },
+      3: { index: 3 },
+      4: { index: 4 }
+    }
+  }, {
+    excludedTabIds: [2],
+    renamedGroups: {
+      "group-0": "AI"
+    },
+    liveTabIds: [1, 2, 3, 4]
+  });
+
+  assert.equal(applyPlan.startIndex, 1);
+  assert.deepEqual(applyPlan.groups, [
+    {
+      id: "group-0",
+      category: "AI",
+      tabIds: [1, 3],
+      originalIndexes: [1, 3]
+    }
+  ]);
+  assert.deepEqual(applyPlan.singles, [
+    {
+      tabId: 4,
+      category: "Shopping",
+      originalIndex: 4
+    }
+  ]);
+  assert.deepEqual(applyPlan.skippedApplyTabIds, [2]);
+  assert.deepEqual(applyPlan.orderedTabIds, [1, 3, 4]);
+});
+
+test("buildApplyPlanFromPreview turns reduced one-tab groups into singles", () => {
+  const applyPlan = buildApplyPlanFromPreview({
+    startIndex: 0,
+    groups: [
+      {
+        id: "group-0",
+        category: "Travel",
+        tabIds: [1, 2]
+      }
+    ],
+    singles: [],
+    tabDetails: {
+      1: { index: 0 },
+      2: { index: 1 }
+    }
+  }, {
+    excludedTabIds: [2],
+    liveTabIds: [1, 2]
+  });
+
+  assert.deepEqual(applyPlan.groups, []);
+  assert.deepEqual(applyPlan.singles, [
+    {
+      tabId: 1,
+      category: "Travel",
+      originalIndex: 0
+    }
+  ]);
+  assert.deepEqual(applyPlan.orderedTabIds, [1]);
+});
+
+test("buildApplyPlanFromPreview caps applied groups at three", () => {
+  const applyPlan = buildApplyPlanFromPreview({
+    startIndex: 0,
+    groups: [
+      { id: "group-0", category: "Alpha", tabIds: [1, 2] },
+      { id: "group-1", category: "Beta", tabIds: [3, 4] },
+      { id: "group-2", category: "Gamma", tabIds: [5, 6] },
+      { id: "group-3", category: "Delta", tabIds: [7, 8] }
+    ],
+    singles: [],
+    tabDetails: {
+      1: { index: 0 },
+      2: { index: 1 },
+      3: { index: 2 },
+      4: { index: 3 },
+      5: { index: 4 },
+      6: { index: 5 },
+      7: { index: 6 },
+      8: { index: 7 }
+    }
+  }, {
+    liveTabIds: [1, 2, 3, 4, 5, 6, 7, 8]
+  });
+
+  assert.deepEqual(applyPlan.groups.map((group) => group.category), ["Alpha", "Beta", "Gamma"]);
+  assert.deepEqual(applyPlan.singles, [
+    {
+      tabId: 7,
+      category: "Delta",
+      originalIndex: 6
+    },
+    {
+      tabId: 8,
+      category: "Delta",
+      originalIndex: 7
+    }
+  ]);
 });

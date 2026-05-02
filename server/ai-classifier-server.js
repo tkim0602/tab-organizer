@@ -211,7 +211,7 @@ async function classifyWithAnthropic(tabs) {
 
 function buildSystemPrompt() {
   return [
-    "Create session-specific browser tab category names from the provided tab titles, hostnames, and URLs.",
+    "Create session-specific browser tab category names from the provided tab titles and hostnames.",
     "Use 2 to 8 concise category names, each 1 to 3 words.",
     "Each category must describe one topic only.",
     "Do not use compound labels with &, /, commas, plus signs, hyphens, or the word and.",
@@ -219,7 +219,7 @@ function buildSystemPrompt() {
     "Use AI for tabs about ChatGPT, Claude, Gemini, OpenAI, Anthropic, LLMs, prompts, model docs, or AI tools.",
     "Return one assignment for each provided tab ID and make every assignment category exactly match one category in the categories array.",
     `Use ${FALLBACK_CATEGORY} only for tabs that do not fit a clearer generated category.`,
-    "Do not include page contents, personal details, or full URLs in category names."
+    "Do not include page contents, personal details, or URLs in category names."
   ].join(" ");
 }
 
@@ -259,7 +259,6 @@ function validateTabs(tabs) {
     .map((tab) => ({
       id: tab.id,
       title: String(tab.title || "").slice(0, 240),
-      url: String(tab.url || "").slice(0, 800),
       hostname: String(tab.hostname || "").slice(0, 240)
     }));
 }

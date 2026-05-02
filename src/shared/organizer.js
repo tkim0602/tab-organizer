@@ -1,6 +1,8 @@
 import { CATEGORY_ORDER, classifyTab, normalizeCategoryName } from "./categories.js";
 import { countScreeningReasons, screenTab } from "./screener.js";
 
+export const MAX_GROUPS_PER_WINDOW = 3;
+
 export function buildWindowPlan(tabs, options = {}) {
   const sortedTabs = [...tabs].sort((a, b) => a.index - b.index);
   const startIndex = sortedTabs.filter((tab) => tab.pinned).length;
@@ -14,9 +16,72 @@ export function buildCrossWindowPlan(orderedTabs, targetWindowId, options = {}) 
   return buildPlanFromOrderedTabs(orderedTabs, targetPinnedCount, options);
 }
 
+export function buildApplyPlanFromPreview(previewPlan, options = {}) {
+  const excludedTabIds = new Set(options.excludedTabIds || []);
+  const liveTabIds = options.liveTabIds ? new Set(options.liveTabIds) : null;
+  const renamedGroups = options.renamedGroups || {};
+  const maxGroups = options.maxGroups ?? MAX_GROUPS_PER_WINDOW;
+  const groups = [];
+  const singles = [];
+  const skippedApplyTabIds = [];
+
+  for (const group of previewPlan.groups || []) {
+    const tabIds = filterApplyTabIds(group.tabIds, excludedTabIds, liveTabIds, skippedApplyTabIds);
+    const category = normalizeCategoryName(renamedGroups[group.id]) || group.category;
+
+    if (tabIds.length >= 2 && groups.length < maxGroups) {
+      groups.push({
+        id: group.id,
+        category,
+        tabIds,
+        originalIndexes: tabIds.map((tabId) => getPreviewTabIndex(previewPlan, tabId))
+      });
+    } else {
+      for (const tabId of tabIds) {
+        singles.push({
+          tabId,
+          category,
+          originalIndex: getPreviewTabIndex(previewPlan, tabId)
+        });
+      }
+    }
+  }
+
+  for (const single of previewPlan.singles || []) {
+    if (shouldApplyTab(single.tabId, excludedTabIds, liveTabIds)) {
+      singles.push({
+        tabId: single.tabId,
+        category: single.category,
+        originalIndex: single.originalIndex
+      });
+    } else {
+      skippedApplyTabIds.push(single.tabId);
+    }
+  }
+
+  return {
+    pinnedTabIds: previewPlan.pinnedTabIds || [],
+    startIndex: previewPlan.startIndex || 0,
+    groups,
+    singles,
+    skippedTabs: previewPlan.skippedTabs || [],
+    screeningReasonCounts: previewPlan.screeningReasonCounts || {},
+    skippedApplyTabIds,
+    orderedTabIds: [
+      ...groups.flatMap((group) => group.tabIds),
+      ...singles.map((single) => single.tabId)
+    ],
+    skippedPinnedCount: previewPlan.skippedPinnedCount || 0,
+    screenedOutCount: previewPlan.screenedOutCount || 0,
+    organizedTabCount: groups.reduce((count, group) => count + group.tabIds.length, 0) + singles.length,
+    groupCount: groups.length
+  };
+}
+
 function buildPlanFromOrderedTabs(orderedTabs, startIndex, options = {}) {
   const categoryOverrides = options.categoryOverrides || new Map();
   const preferredCategoryOrder = options.categoryOrder || CATEGORY_ORDER;
+  const maxGroups = options.maxGroups ?? MAX_GROUPS_PER_WINDOW;
   const sortedTabs = [...orderedTabs];
   const screenedTabs = sortedTabs.map((tab) => ({
     tab,
@@ -44,7 +109,7 @@ function buildPlanFromOrderedTabs(orderedTabs, startIndex, options = {}) {
 
   for (const category of categoryOrder) {
     const items = candidates.filter((item) => item.category === category);
-    if (items.length < 2) {
+    if (items.length < 2 || groups.length >= maxGroups) {
       continue;
     }
 
@@ -108,4 +173,25 @@ function buildCategoryOrder(preferredCategoryOrder, candidates) {
   }
 
   return categoryOrder;
+}
+
+function filterApplyTabIds(tabIds, excludedTabIds, liveTabIds, skippedApplyTabIds) {
+  return tabIds.filter((tabId) => {
+    const shouldApply = shouldApplyTab(tabId, excludedTabIds, liveTabIds);
+
+    if (!shouldApply) {
+      skippedApplyTabIds.push(tabId);
+    }
+
+    return shouldApply;
+  });
+}
+
+function shouldApplyTab(tabId, excludedTabIds, liveTabIds) {
+  return !excludedTabIds.has(tabId) && (!liveTabIds || liveTabIds.has(tabId));
+}
+
+function getPreviewTabIndex(previewPlan, tabId) {
+  const tab = previewPlan.tabDetails?.[tabId];
+  return tab?.index ?? 0;
 }

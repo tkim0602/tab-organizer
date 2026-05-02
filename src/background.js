@@ -1,10 +1,11 @@
-import { CATEGORY_ORDER, getCategoryColor } from "./shared/categories.js";
+import { CATEGORY_ORDER, getCategoryColor, getHostname } from "./shared/categories.js";
 import { fetchAiCategoryMap } from "./shared/ai-classifier.js";
-import { buildCrossWindowPlan, buildWindowPlan } from "./shared/organizer.js";
+import { buildApplyPlanFromPreview, buildCrossWindowPlan, buildWindowPlan } from "./shared/organizer.js";
 
 const STORAGE_KEYS = {
   lastSnapshot: "lastSnapshot",
-  lastRunSummary: "lastRunSummary"
+  lastRunSummary: "lastRunSummary",
+  pendingPreviewPlan: "pendingPreviewPlan"
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -20,12 +21,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function handleMessage(message) {
   switch (message?.type) {
+    case "PREVIEW_ORGANIZATION":
+      return previewOrganization(message.mode);
+    case "APPLY_ORGANIZATION":
+      return applyPreviewOrganization(message);
+    case "CANCEL_PREVIEW":
+      return cancelPreview();
     case "ORGANIZE_CURRENT_WINDOW":
-      return organizeCurrentWindow();
+      return previewOrganization("currentWindow");
     case "ORGANIZE_ALL_WINDOWS":
-      return organizeAllWindows();
+      return previewOrganization("allWindowsSeparate");
     case "CONSOLIDATE_ACROSS_WINDOWS":
-      return consolidateAcrossWindows();
+      return previewOrganization("crossWindow");
     case "UNDO_LAST_ORGANIZATION":
       return undoLastOrganization();
     case "GET_STATUS":
@@ -35,7 +42,19 @@ async function handleMessage(message) {
   }
 }
 
-async function organizeCurrentWindow() {
+async function previewOrganization(mode) {
+  if (mode === "crossWindow") {
+    return previewCrossWindowOrganization();
+  }
+
+  if (mode === "allWindowsSeparate") {
+    return previewAllWindowsOrganization();
+  }
+
+  return previewCurrentWindowOrganization();
+}
+
+async function previewCurrentWindowOrganization() {
   const window = await getFocusedNormalWindow(true);
   const tabs = window.tabs || [];
   const snapshot = await createSnapshot([window]);
@@ -44,20 +63,23 @@ async function organizeCurrentWindow() {
     categoryOverrides: classifier.categoryMap,
     categoryOrder: classifier.categoryOrder
   });
-  const summary = createOrganizationSummary({
-    windowsProcessed: 1,
+
+  const previewPlan = createPreviewPlan({
     mode: "currentWindow",
+    targetWindowId: window.id,
+    windowsProcessed: 1,
+    tabs,
     classifier,
-    plans: [plan]
+    plan,
+    snapshot
   });
 
-  await applyWindowPlan(window.id, plan);
-  await saveOrganizationState(snapshot, summary);
+  await savePreviewPlan(previewPlan);
 
-  return { ok: true, summary, undoAvailable: true };
+  return { ok: true, previewPlan, undoAvailable: await hasUndoSnapshot() };
 }
 
-async function organizeAllWindows() {
+async function previewAllWindowsOrganization() {
   const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
   const snapshot = await createSnapshot(windows);
   const classifier = await classifyTabsForOrganization(flattenWindowTabs(windows));
@@ -71,23 +93,23 @@ async function organizeAllWindows() {
     });
 
     plans.push(plan);
-
-    await applyWindowPlan(window.id, plan);
   }
 
-  const summary = createOrganizationSummary({
-    windowsProcessed: windows.length,
+  const previewPlan = createMultiWindowPreviewPlan({
     mode: "allWindowsSeparate",
+    windowsProcessed: windows.length,
+    windows,
     classifier,
-    plans
+    plans,
+    snapshot
   });
 
-  await saveOrganizationState(snapshot, summary);
+  await savePreviewPlan(previewPlan);
 
-  return { ok: true, summary, undoAvailable: true };
+  return { ok: true, previewPlan, undoAvailable: await hasUndoSnapshot() };
 }
 
-async function consolidateAcrossWindows() {
+async function previewCrossWindowOrganization() {
   const targetWindow = await getFocusedNormalWindow(false);
   const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
   const snapshot = await createSnapshot(windows);
@@ -97,19 +119,69 @@ async function consolidateAcrossWindows() {
     categoryOverrides: classifier.categoryMap,
     categoryOrder: classifier.categoryOrder
   });
-  const summary = createOrganizationSummary({
-    windowsProcessed: windows.length,
+
+  const previewPlan = createPreviewPlan({
     mode: "crossWindow",
     targetWindowId: targetWindow.id,
+    windowsProcessed: windows.length,
+    tabs: orderedTabs,
     classifier,
-    tabsMovedAcrossWindows: countMovedAcrossWindows(plan.orderedTabIds, orderedTabs, targetWindow.id),
-    plans: [plan]
+    plan,
+    snapshot
   });
 
-  await applyWindowPlan(targetWindow.id, plan);
-  await saveOrganizationState(snapshot, summary);
+  await savePreviewPlan(previewPlan);
 
-  return { ok: true, summary, undoAvailable: true };
+  return { ok: true, previewPlan, undoAvailable: await hasUndoSnapshot() };
+}
+
+async function applyPreviewOrganization(message) {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.pendingPreviewPlan);
+  const previewPlan = data[STORAGE_KEYS.pendingPreviewPlan];
+
+  if (!previewPlan || previewPlan.id !== message.planId) {
+    return { ok: false, error: "No matching preview plan is available to apply." };
+  }
+
+  const liveTabs = await getLiveTabsById();
+  const liveWindowIds = new Set((await chrome.windows.getAll({ windowTypes: ["normal"] })).map((window) => window.id));
+
+  if (!liveWindowIds.has(previewPlan.targetWindowId)) {
+    return { ok: false, error: "The target window for this preview is no longer open." };
+  }
+
+  const applyPlan = buildApplyPlanFromPreview(previewPlan, {
+    excludedTabIds: message.excludedTabIds || [],
+    renamedGroups: message.renamedGroups || {},
+    liveTabIds: [...liveTabs.keys()]
+  });
+  const tabsMovedAcrossWindows = previewPlan.mode === "crossWindow"
+    ? countMovedAcrossPreview(applyPlan.orderedTabIds, previewPlan.tabDetails, previewPlan.targetWindowId)
+    : 0;
+  const summary = createOrganizationSummary({
+    windowsProcessed: previewPlan.windowsProcessed,
+    mode: previewPlan.mode,
+    targetWindowId: previewPlan.targetWindowId,
+    classifier: previewPlan.classifier,
+    tabsMovedAcrossWindows,
+    skippedApplyTabs: applyPlan.skippedApplyTabIds.length,
+    plans: [applyPlan]
+  });
+
+  await applyWindowPlan(previewPlan.targetWindowId, applyPlan);
+  await chrome.storage.local.remove(STORAGE_KEYS.pendingPreviewPlan);
+  await saveOrganizationState(previewPlan.snapshot, summary);
+
+  return {
+    ok: true,
+    summary,
+    undoAvailable: applyPlan.orderedTabIds.length > 0
+  };
+}
+
+async function cancelPreview() {
+  await chrome.storage.local.remove(STORAGE_KEYS.pendingPreviewPlan);
+  return { ok: true, undoAvailable: await hasUndoSnapshot() };
 }
 
 async function applyWindowPlan(windowId, plan) {
@@ -178,6 +250,12 @@ async function saveOrganizationState(snapshot, summary) {
   await chrome.storage.local.set({
     [STORAGE_KEYS.lastSnapshot]: snapshot,
     [STORAGE_KEYS.lastRunSummary]: summary
+  });
+}
+
+async function savePreviewPlan(previewPlan) {
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.pendingPreviewPlan]: previewPlan
   });
 }
 
@@ -257,11 +335,16 @@ async function undoLastOrganization() {
 }
 
 async function getStatus() {
-  const data = await chrome.storage.local.get([STORAGE_KEYS.lastSnapshot, STORAGE_KEYS.lastRunSummary]);
+  const data = await chrome.storage.local.get([
+    STORAGE_KEYS.lastSnapshot,
+    STORAGE_KEYS.lastRunSummary,
+    STORAGE_KEYS.pendingPreviewPlan
+  ]);
   return {
     ok: true,
     undoAvailable: Boolean(data[STORAGE_KEYS.lastSnapshot]),
-    summary: data[STORAGE_KEYS.lastRunSummary] || null
+    summary: data[STORAGE_KEYS.lastRunSummary] || null,
+    previewPlan: data[STORAGE_KEYS.pendingPreviewPlan] || null
   };
 }
 
@@ -365,6 +448,11 @@ async function classifyTabsForOrganization(tabs) {
   };
 }
 
+async function hasUndoSnapshot() {
+  const data = await chrome.storage.local.get(STORAGE_KEYS.lastSnapshot);
+  return Boolean(data[STORAGE_KEYS.lastSnapshot]);
+}
+
 function flattenWindowTabs(windows) {
   return windows.flatMap((window, windowOrder) =>
     (window.tabs || [])
@@ -381,6 +469,7 @@ function createOrganizationSummary({
   mode,
   targetWindowId = null,
   tabsMovedAcrossWindows = 0,
+  skippedApplyTabs = 0,
   classifier = { source: "local", error: null, categoryMap: new Map(), categoryOrder: CATEGORY_ORDER },
   plans
 }) {
@@ -389,7 +478,7 @@ function createOrganizationSummary({
     mode,
     classifierSource: classifier.source,
     classifierError: classifier.error || null,
-    aiClassifiedTabs: classifier.categoryMap?.size || 0,
+    aiClassifiedTabs: classifier.categoryMap?.size || classifier.categoryMapSize || 0,
     generatedCategories: classifier.categoryOrder || [],
     windowsProcessed,
     tabsOrganized: 0,
@@ -397,7 +486,8 @@ function createOrganizationSummary({
     skippedPinnedTabs: 0,
     screenedOutTabs: 0,
     skippedByReason: {},
-    tabsMovedAcrossWindows
+    tabsMovedAcrossWindows,
+    skippedApplyTabs
   };
 
   for (const plan of plans) {
@@ -418,4 +508,124 @@ function createOrganizationSummary({
 function countMovedAcrossWindows(tabIds, orderedTabs, targetWindowId) {
   const tabsById = new Map(orderedTabs.map((tab) => [tab.id, tab]));
   return tabIds.filter((tabId) => tabsById.get(tabId)?.windowId !== targetWindowId).length;
+}
+
+function createPreviewPlan({ mode, targetWindowId, windowsProcessed, tabs, classifier, plan, snapshot }) {
+  const tabDetails = createTabDetails(tabs);
+
+  return {
+    id: createPlanId(),
+    timestamp: Date.now(),
+    mode,
+    targetWindowId,
+    windowsProcessed,
+    snapshot,
+    classifier: serializeClassifier(classifier),
+    startIndex: plan.startIndex,
+    pinnedTabIds: plan.pinnedTabIds,
+    groups: plan.groups.map((group, index) => ({
+      id: `group-${index}`,
+      category: group.category,
+      tabIds: group.tabIds,
+      tabs: group.tabIds.map((tabId) => tabDetails[tabId]).filter(Boolean)
+    })),
+    singles: plan.singles.map((single) => ({
+      ...single,
+      tab: tabDetails[single.tabId]
+    })),
+    skippedTabs: plan.skippedTabs,
+    screeningReasonCounts: plan.screeningReasonCounts,
+    skippedPinnedCount: plan.skippedPinnedCount,
+    screenedOutCount: plan.screenedOutCount,
+    organizedTabCount: plan.organizedTabCount,
+    groupCount: plan.groupCount,
+    tabDetails
+  };
+}
+
+function createMultiWindowPreviewPlan({ mode, windowsProcessed, windows, classifier, plans, snapshot }) {
+  const combinedTabs = flattenWindowTabs(windows);
+  const tabDetails = createTabDetails(combinedTabs);
+  const groups = [];
+  const singles = [];
+  const skippedTabs = [];
+  const screeningReasonCounts = {};
+  let organizedTabCount = 0;
+  let skippedPinnedCount = 0;
+  let screenedOutCount = 0;
+
+  for (const [windowIndex, plan] of plans.entries()) {
+    for (const group of plan.groups) {
+      groups.push({
+        id: `window-${windowIndex}-group-${groups.length}`,
+        category: group.category,
+        tabIds: group.tabIds,
+        tabs: group.tabIds.map((tabId) => tabDetails[tabId]).filter(Boolean)
+      });
+    }
+
+    for (const single of plan.singles) {
+      singles.push({
+        ...single,
+        tab: tabDetails[single.tabId]
+      });
+    }
+
+    skippedTabs.push(...plan.skippedTabs);
+    mergeCounts(screeningReasonCounts, plan.screeningReasonCounts);
+    organizedTabCount += plan.organizedTabCount;
+    skippedPinnedCount += plan.skippedPinnedCount;
+    screenedOutCount += plan.screenedOutCount;
+  }
+
+  return {
+    id: createPlanId(),
+    timestamp: Date.now(),
+    mode,
+    targetWindowId: null,
+    windowsProcessed,
+    snapshot,
+    classifier: serializeClassifier(classifier),
+    startIndex: 0,
+    pinnedTabIds: plans.flatMap((plan) => plan.pinnedTabIds),
+    groups,
+    singles,
+    skippedTabs,
+    screeningReasonCounts,
+    skippedPinnedCount,
+    screenedOutCount,
+    organizedTabCount,
+    groupCount: groups.length,
+    tabDetails
+  };
+}
+
+function createTabDetails(tabs) {
+  return Object.fromEntries(tabs.map((tab) => [
+    tab.id,
+    {
+      id: tab.id,
+      title: tab.title || "Untitled tab",
+      hostname: getHostname(tab.url),
+      windowId: tab.windowId,
+      index: tab.index
+    }
+  ]));
+}
+
+function serializeClassifier(classifier) {
+  return {
+    source: classifier.source,
+    error: classifier.error,
+    categoryOrder: classifier.categoryOrder || CATEGORY_ORDER,
+    categoryMapSize: classifier.categoryMap?.size || 0
+  };
+}
+
+function createPlanId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function countMovedAcrossPreview(tabIds, tabDetails, targetWindowId) {
+  return tabIds.filter((tabId) => tabDetails?.[tabId]?.windowId !== targetWindowId).length;
 }
